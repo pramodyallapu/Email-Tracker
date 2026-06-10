@@ -92,12 +92,24 @@ export function useMailSync(initialCoverage: EnrichedMailboxStat[]) {
           return;
         }
 
-        let reset = true;
+        const needsFullRescan = coverage.some((m) => {
+          if (!m.messagesTotal || m.messagesTotal === 0) return true;
+          const pct = (m.syncedMessages / m.messagesTotal) * 100;
+          return pct < 90;
+        });
+
+        let reset = needsFullRescan;
         let hasMore = true;
         let totalSynced = 0;
         let lastMailboxes: MailboxSyncResult[] = [];
         let lastErrors = 0;
         let lastCoverage = coverage;
+
+        if (!needsFullRescan) {
+          setStatusMessage(
+            "Almost fully synced — filling remaining messages only (fast)…"
+          );
+        }
 
         while (hasMore) {
           const res = await fetch("/api/gmail/sync", {

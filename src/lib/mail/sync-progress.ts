@@ -31,6 +31,27 @@ export async function setConnectionsSyncStatus(
   }
 }
 
+/** Resume scanning for missing messages without wiping progress. */
+export async function startGapFillScan(
+  connectionIds: string[]
+): Promise<void> {
+  if (connectionIds.length === 0) return;
+  const supabase = createAdminClient();
+
+  const { error } = await supabase
+    .from("mail_connections")
+    .update({
+      sync_page_token: null,
+      sync_status: "running",
+      updated_at: new Date().toISOString(),
+    })
+    .in("id", connectionIds);
+
+  if (error) {
+    console.error("startGapFillScan:", error.message);
+  }
+}
+
 export async function resetFullSyncCursors(
   connectionIds: string[]
 ): Promise<void> {

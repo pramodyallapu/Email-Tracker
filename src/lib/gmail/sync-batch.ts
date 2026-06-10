@@ -16,8 +16,11 @@ const METADATA_HEADERS = [
   "In-Reply-To",
 ];
 
-/** Messages processed per API request (keeps under server timeout). */
-export const GMAIL_FULL_SYNC_BATCH_SIZE = 250;
+/** Max Gmail message.get calls per request (slow). */
+export const GMAIL_FETCH_BATCH_SIZE = 50;
+
+/** Max message IDs to scan per request (list + DB skip is fast). */
+export const GMAIL_SCAN_BATCH_SIZE = 500;
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,6 +42,27 @@ async function countSyncedForConnection(
   return count ?? 0;
 }
 
+async function existingMessageIds(
+  connectionId: string,
+  gmailMessageIds: string[]
+): Promise<Set<string>> {
+  if (gmailMessageIds.length === 0) return new Set();
+
+  const supabase = createAdminClient();
+  const { data, error } = await supabase
+    .from("emails")
+    .select("gmail_message_id")
+    .eq("mail_connection_id", connectionId)
+    .in("gmail_message_id", gmailMessageIds);
+
+  if (error) {
+    console.error("existingMessageIds:", error.message);
+    return new Set();
+  }
+
+  return new Set((data ?? []).map((r) => r.gmail_message_id));
+}
+
 export async function fullGmailSyncBatch(
   scope: MailScope,
   connection: MailConnection
@@ -50,19 +74,20 @@ export async function fullGmailSyncBatch(
 
   const profileRes = await gmail.users.getProfile({ userId: "me" });
   const historyId = profileRes.data.historyId ?? undefined;
+  const messagesTotal = profileRes.data.messagesTotal ?? 0;
 
   let pageToken: string | undefined =
     connection.sync_page_token ?? undefined;
   let synced = 0;
   let errors = 0;
-  let processed = 0;
-  let requestCount = 0;
+  let scanned = 0;
+  let fetched = 0;
   let lastUpsertError: string | null = null;
 
-  while (processed < GMAIL_FULL_SYNC_BATCH_SIZE) {
+  while (scanned < GMAIL_SCAN_BATCH_SIZE && fetched < GMAIL_FETCH_BATCH_SIZE) {
     const listRes = await gmail.users.messages.list({
       userId: "me",
-      maxResults: Math.min(100, GMAIL_FULL_SYNC_BATCH_SIZE - processed),
+      maxResults: Math.min(100, GMAIL_SCAN_BATCH_SIZE - scanned),
       pageToken,
       includeSpamTrash: true,
       q: "in:anywhere",
@@ -73,11 +98,20 @@ export async function fullGmailSyncBatch(
 
     if (messageIds.length === 0) break;
 
-    for (const item of messageIds) {
-      if (processed >= GMAIL_FULL_SYNC_BATCH_SIZE) break;
+    const ids = messageIds
+      .map((m) => m.id)
+      .filter((id): id is string => Boolean(id));
+    const alreadySynced = await existingMessageIds(connection.id, ids);
 
-      const msgId = item?.id;
-      if (!msgId) continue;
+    for (const msgId of ids) {
+      if (scanned >= GMAIL_SCAN_BATCH_SIZE) break;
+      if (fetched >= GMAIL_FETCH_BATCH_SIZE) break;
+
+      scanned += 1;
+
+      if (alreadySynced.has(msgId)) {
+        continue;
+      }
 
       try {
         const detail = await gmail.users.messages.get({
@@ -86,6 +120,8 @@ export async function fullGmailSyncBatch(
           format: "metadata",
           metadataHeaders: METADATA_HEADERS,
         });
+
+        fetched += 1;
 
         const parsed = parseMessage(detail.data, mailboxEmails);
         if (!parsed) continue;
@@ -108,6 +144,7 @@ export async function fullGmailSyncBatch(
           synced += 1;
         }
       } catch (err) {
+        fetched += 1;
         errors += 1;
         if (!lastUpsertError) {
           lastUpsertError =
@@ -115,20 +152,24 @@ export async function fullGmailSyncBatch(
         }
       }
 
-      processed += 1;
-      requestCount += 1;
-      if (requestCount % 10 === 0) await delay(50);
+      if (fetched % 10 === 0) await delay(50);
     }
 
     if (!pageToken) break;
   }
 
-  const hasMore = Boolean(pageToken);
   const totalInDb = await countSyncedForConnection(connection.id);
+  const hasMore = Boolean(pageToken);
+
+  // Done scanning — no page left and DB matches Gmail total (or close)
+  const effectivelyComplete =
+    !hasMore &&
+    (messagesTotal === 0 || totalInDb >= messagesTotal - 5);
 
   await updateConnectionSyncProgress(connection.id, {
     sync_page_token: hasMore ? pageToken! : null,
-    sync_cursor: !hasMore && historyId ? historyId : connection.sync_cursor,
+    sync_cursor:
+      effectivelyComplete && historyId ? historyId : connection.sync_cursor,
     sync_status: hasMore ? "running" : "idle",
     sync_progress_synced: totalInDb,
   });

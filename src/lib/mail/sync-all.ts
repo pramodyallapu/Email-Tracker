@@ -12,6 +12,7 @@ import {
   resetFullSyncCursors,
   setConnectionsSyncStatus,
   shouldRunFullSyncBatch,
+  startGapFillScan,
 } from "@/lib/mail/sync-progress";
 import { getOrgOwnerUserId } from "@/lib/org/context";
 import { resolveMailScope, type MailScope } from "@/lib/mail/scope";
@@ -72,7 +73,14 @@ async function syncConnections(
         shouldRunFullSyncBatch(c, options)
       );
       if (!anyRunning) {
-        return { synced: 0, errors: 0, total: 0, hasMore: false, mailboxes: [] };
+        const googleIds = active
+          .filter((c) => c.provider === "google")
+          .map((c) => c.id);
+        await startGapFillScan(googleIds);
+        for (const conn of active) {
+          if (conn.provider !== "google") continue;
+          await incrementalGmailSync(scope, conn);
+        }
       }
     }
     active = (await reloadConnections(scope)).filter(
