@@ -81,9 +81,7 @@ async function syncConnections(
     ).filter((c) => (c.access_token || c.refresh_token) && c.provider === "google");
 
     if (options?.reset) {
-      await resetFullSyncCursors(
-        options.connectionIds?.length ? activeIds : googleConnsForPrep.map((c) => c.id)
-      );
+      await resetFullSyncCursors(googleConnsForPrep.map((c) => c.id));
     } else {
       const googleConns = googleConnsForPrep;
       await reconcileFullSyncCompletion(googleConns);

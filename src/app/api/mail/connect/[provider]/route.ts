@@ -213,7 +213,9 @@ export async function GET(
       );
     }
 
-    void syncAllForUser(session.user.id, "bootstrap");
+    void syncAllForUser(session.user.id, "bootstrap", {
+      connectionIds: [conn.id],
+    });
   }
 
   revalidatePath("/dashboard/settings");
