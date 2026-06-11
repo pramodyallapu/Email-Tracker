@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { scopeEmailsFilter, type MailScope } from "@/lib/mail/scope";
+import type { MailScope } from "@/lib/mail/scope";
 import type { MailConnection } from "@/types/mail";
 
 export const DEFAULT_GMAIL_LIST_QUERY = "in:anywhere";

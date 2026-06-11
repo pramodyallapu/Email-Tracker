@@ -90,7 +90,7 @@ export async function fullGmailSyncBatch(
     messagesTotal,
   });
 
-  let listQuery = resume.listQuery;
+  const listQuery = resume.listQuery;
   let pageToken: string | undefined = resume.pageToken;
 
   if (resume.resumedFrom === "page_token") {

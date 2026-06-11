@@ -148,9 +148,6 @@ export function useMailSync(initialCoverage: EnrichedMailboxStat[]) {
           if (hasMore) {
             const coverageNow: EnrichedMailboxStat[] =
               data.coverage ?? lastCoverage;
-            const running = coverageNow.filter(
-              (m: EnrichedMailboxStat) => m.syncStatus === "running"
-            );
             const progress = coverageNow
               .filter(
                 (m: EnrichedMailboxStat) =>

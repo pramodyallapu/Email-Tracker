@@ -69,8 +69,11 @@ export function ThreadTable({
   const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
   const [zohoDc, setZohoDc] = useState<string | null>(null);
 
+  const selectedId = selected?.id;
+  const selectedMessageCount = selected?.messageCount;
+
   useEffect(() => {
-    if (!selected) {
+    if (!selectedId) {
       setDetailLoading(false);
       setDetailError(null);
       setDetailCount(null);
@@ -88,14 +91,14 @@ export function ThreadTable({
     setThreadMessages([]);
     setZohoDc(null);
 
-    fetch(`/api/threads/${selected.id}`)
+    fetch(`/api/threads/${selectedId}`)
       .then(async (res) => {
         const data = await res.json();
         if (!res.ok) {
           throw new Error(data.error ?? "Failed to load thread");
         }
         if (cancelled) return;
-        setDetailCount(data.messageCount ?? selected.messageCount);
+        setDetailCount(data.messageCount ?? selectedMessageCount);
         setGmailCount(
           typeof data.gmailTotal === "number" ? data.gmailTotal : null
         );
@@ -115,7 +118,7 @@ export function ThreadTable({
     return () => {
       cancelled = true;
     };
-  }, [selected?.id]);
+  }, [selectedId, selectedMessageCount]);
 
   const filtered = useMemo(() => {
     let list = [...threads];
