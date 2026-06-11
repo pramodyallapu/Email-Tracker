@@ -45,7 +45,8 @@ async function countSyncedForConnection(
 async function existingMessageIds(
   scope: MailScope,
   connectionId: string,
-  gmailMessageIds: string[]
+  gmailMessageIds: string[],
+  multiMailboxOrg: boolean
 ): Promise<Set<string>> {
   if (gmailMessageIds.length === 0) return new Set();
 
@@ -57,9 +58,15 @@ async function existingMessageIds(
     .in("gmail_message_id", gmailMessageIds);
   query = scopeEmailsFilter(query, scope);
 
-  const { data, error } = await query.or(
-    `mail_connection_id.eq.${connectionId},mail_connection_id.is.null`
-  );
+  if (multiMailboxOrg) {
+    query = query.eq("mail_connection_id", connectionId);
+  } else {
+    query = query.or(
+      `mail_connection_id.eq.${connectionId},mail_connection_id.is.null`
+    );
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.error("existingMessageIds:", error.message);
@@ -88,6 +95,15 @@ export async function fullGmailSyncBatch(
   const messagesTotal = profileRes.data.messagesTotal ?? 0;
 
   const syncedBefore = await countSyncedForConnection(connection.id);
+  let multiMailboxOrg = false;
+  if (scope.mode === "organization") {
+    const { count } = await createAdminClient()
+      .from("mail_connections")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", scope.organizationId)
+      .eq("provider", "google");
+    multiMailboxOrg = (count ?? 0) > 1;
+  }
   const resume = await resolveGmailListResume(scope, connection, {
     syncedInDb: syncedBefore,
     messagesTotal,
@@ -135,7 +151,12 @@ export async function fullGmailSyncBatch(
     const ids = messageIds
       .map((m) => m.id)
       .filter((id): id is string => Boolean(id));
-    const alreadySynced = await existingMessageIds(scope, connection.id, ids);
+    const alreadySynced = await existingMessageIds(
+      scope,
+      connection.id,
+      ids,
+      multiMailboxOrg
+    );
 
     for (const msgId of ids) {
       if (scanned >= scanLimit()) break;

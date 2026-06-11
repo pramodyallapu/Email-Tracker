@@ -43,6 +43,8 @@ export type SyncRunResult = {
 
 export type SyncOptions = {
   reset?: boolean;
+  /** When set, only these mail connections are synced (e.g. newly connected mailbox). */
+  connectionIds?: string[];
 };
 
 async function reloadConnections(
@@ -67,36 +69,36 @@ async function syncConnections(
   const mailboxes: MailboxSyncResult[] = [];
 
   let active = connections.filter((c) => c.access_token || c.refresh_token);
+  if (options?.connectionIds?.length) {
+    const allowed = new Set(options.connectionIds);
+    active = active.filter((c) => allowed.has(c.id));
+  }
   const activeIds = active.map((c) => c.id);
 
   if (mode === "full") {
+    const googleConnsForPrep = (
+      await reloadConnections(scope)
+    ).filter((c) => (c.access_token || c.refresh_token) && c.provider === "google");
+
     if (options?.reset) {
-      await resetFullSyncCursors(activeIds);
+      await resetFullSyncCursors(
+        options.connectionIds?.length ? activeIds : googleConnsForPrep.map((c) => c.id)
+      );
     } else {
-      const googleConns = active.filter((c) => c.provider === "google");
+      const googleConns = googleConnsForPrep;
       await reconcileFullSyncCompletion(googleConns);
 
-      const neverStarted = googleConns
-        .filter(
-          (c) =>
-            (c.sync_progress_synced ?? 0) === 0 &&
-            !isMailboxFullSyncComplete(c)
-        )
-        .map((c) => c.id);
-      const resumeIds = googleConns
+      const queueIds = googleConns
         .filter(
           (c) =>
             !isMailboxFullSyncComplete(c) &&
-            (c.sync_progress_synced ?? 0) > 0 &&
-            c.sync_status !== "running"
+            c.sync_status !== "running" &&
+            !c.sync_page_token
         )
         .map((c) => c.id);
 
-      if (neverStarted.length > 0) {
-        await startGapFillScan(neverStarted);
-      }
-      if (resumeIds.length > 0) {
-        await setConnectionsSyncStatus(resumeIds, "running");
+      if (queueIds.length > 0) {
+        await startGapFillScan(queueIds);
       }
     }
     active = (await reloadConnections(scope)).filter(

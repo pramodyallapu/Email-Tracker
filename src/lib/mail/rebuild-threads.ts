@@ -137,6 +137,53 @@ export async function rebuildThreadStats(scope: MailScope): Promise<void> {
   }
 }
 
+/** Rebuild thread reply stats for one mailbox only (after connect / bootstrap). */
+export async function rebuildThreadStatsForConnection(
+  scope: MailScope,
+  connectionId: string
+): Promise<void> {
+  const supabase = createAdminClient();
+  const mailboxEmails = await getMailboxEmails(scope);
+
+  const { data: rows, error } = await supabase
+    .from("emails")
+    .select(EMAIL_SELECT)
+    .eq("mail_connection_id", connectionId)
+    .order("received_at", { ascending: true });
+
+  if (error) {
+    console.error("rebuildThreadStatsForConnection:", error.message);
+    return;
+  }
+
+  const emails = (rows ?? []) as ThreadEmailRow[];
+  if (!emails.length) return;
+
+  for (const email of emails) {
+    const shouldBeSent = resolveIsSent(email, mailboxEmails);
+    if (email.is_sent !== shouldBeSent) {
+      await supabase
+        .from("emails")
+        .update({ is_sent: shouldBeSent })
+        .eq("mail_connection_id", connectionId)
+        .eq("gmail_message_id", email.gmail_message_id);
+      email.is_sent = shouldBeSent;
+    }
+  }
+
+  const groups = new Map<string, ThreadEmailRow[]>();
+  for (const email of emails) {
+    const key = `${email.provider}:${email.gmail_thread_id}`;
+    const list = groups.get(key) ?? [];
+    list.push(email);
+    groups.set(key, list);
+  }
+
+  for (const msgs of Array.from(groups.values())) {
+    await upsertThreadFromEmails(scope, msgs, mailboxEmails);
+  }
+}
+
 /** Pick the external correspondent for inbox display (not the logged-in user). */
 export function counterpartyLabel(
   participants: string[],

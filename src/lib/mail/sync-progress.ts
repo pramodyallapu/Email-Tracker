@@ -27,6 +27,29 @@ export function isMailboxFullSyncComplete(conn: MailConnection): boolean {
   return false;
 }
 
+export function remainingSyncMessages(conn: MailConnection): number {
+  if (isMailboxFullSyncComplete(conn)) return Number.MAX_SAFE_INTEGER;
+  const total = conn.sync_gmail_total;
+  const synced = conn.sync_progress_synced ?? 0;
+  if (total != null && total > 0) {
+    return Math.max(0, total - synced);
+  }
+  return synced === 0 ? 0 : Number.MAX_SAFE_INTEGER - 1;
+}
+
+/** New mailbox: queue for full sync with a clean scan cursor. */
+export async function initializeMailboxForFullSync(
+  connectionId: string
+): Promise<void> {
+  await updateConnectionSyncProgress(connectionId, {
+    sync_page_token: null,
+    sync_list_query: null,
+    sync_status: "running",
+    sync_progress_synced: 0,
+    sync_gmail_total: null,
+  });
+}
+
 export async function setConnectionsSyncStatus(
   connectionIds: string[],
   status: ConnectionSyncStatus
@@ -216,7 +239,7 @@ export function isFullSyncPending(conn: MailConnection): boolean {
   return shouldRunFullSyncBatch(conn);
 }
 
-/** Prefer least-synced mailboxes; skip completed ones. */
+/** Finish small / nearly-done mailboxes first; then large backlogs. */
 export function pickNextFullSyncMailbox(
   connections: MailConnection[],
   options?: { reset?: boolean }
@@ -227,9 +250,9 @@ export function pickNextFullSyncMailbox(
   if (pending.length === 0) return null;
 
   return pending.sort((a, b) => {
-    const aSync = a.sync_progress_synced ?? 0;
-    const bSync = b.sync_progress_synced ?? 0;
-    if (aSync !== bSync) return aSync - bSync;
+    const aRem = remainingSyncMessages(a);
+    const bRem = remainingSyncMessages(b);
+    if (aRem !== bRem) return aRem - bRem;
     const aToken = a.sync_page_token ? 0 : 1;
     const bToken = b.sync_page_token ? 0 : 1;
     if (aToken !== bToken) return aToken - bToken;

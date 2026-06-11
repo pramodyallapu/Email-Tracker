@@ -52,7 +52,11 @@ export async function upsertOrgMailConnection(
     zoho_account_id?: string | null;
     zoho_dc?: string | null;
   }
-): Promise<{ connection: MailConnection | null; error?: string }> {
+): Promise<{
+  connection: MailConnection | null;
+  error?: string;
+  isNew?: boolean;
+}> {
   const supabase = createAdminClient();
 
   const { data: existing } = await supabase
@@ -83,12 +87,19 @@ export async function upsertOrgMailConnection(
       console.error("upsertOrgMailConnection update:", error.message);
       return { connection: null, error: error.message };
     }
-    return { connection: data as MailConnection };
+    return { connection: data as MailConnection, isNew: false };
   }
 
   const { data, error } = await supabase
     .from("mail_connections")
-    .insert(row)
+    .insert({
+      ...row,
+      sync_status: "running",
+      sync_page_token: null,
+      sync_list_query: null,
+      sync_progress_synced: 0,
+      sync_gmail_total: null,
+    })
     .select("*")
     .single();
 
@@ -97,7 +108,7 @@ export async function upsertOrgMailConnection(
     return { connection: null, error: error.message };
   }
 
-  return { connection: data as MailConnection };
+  return { connection: data as MailConnection, isNew: true };
 }
 
 /** Legacy personal mailbox connect (non-org users). */

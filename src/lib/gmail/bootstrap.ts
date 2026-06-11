@@ -1,7 +1,8 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getGmailClient, refreshConnectionToken } from "@/lib/gmail/client";
 import { syncRecentInbox } from "@/lib/gmail/recent-sync";
-import { rebuildThreadStats } from "@/lib/mail/rebuild-threads";
+import { rebuildThreadStatsForConnection } from "@/lib/mail/rebuild-threads";
+import { updateConnectionSyncProgress } from "@/lib/mail/sync-progress";
 import type { MailScope } from "@/lib/mail/scope";
 import type { MailConnection } from "@/types/mail";
 
@@ -10,6 +11,15 @@ export type GmailProfileStats = {
   threadsTotal: number;
   historyId: string | null;
 };
+
+async function countEmailsForConnection(connectionId: string): Promise<number> {
+  const supabase = createAdminClient();
+  const { count } = await supabase
+    .from("emails")
+    .select("*", { count: "exact", head: true })
+    .eq("mail_connection_id", connectionId);
+  return count ?? 0;
+}
 
 /** Fast connect: save history cursor + Gmail totals, sync recent inbox only. */
 export async function bootstrapGmailConnection(
@@ -22,7 +32,6 @@ export async function bootstrapGmailConnection(
 }> {
   await refreshConnectionToken(connection);
   const gmail = await getGmailClient(connection);
-  const supabase = createAdminClient();
 
   const profileRes = await gmail.users.getProfile({ userId: "me" });
   const profile: GmailProfileStats = {
@@ -31,22 +40,23 @@ export async function bootstrapGmailConnection(
     historyId: profileRes.data.historyId ?? null,
   };
 
-  if (connection.id) {
-    await supabase
-      .from("mail_connections")
-      .update({
-        sync_cursor: profile.historyId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", connection.id);
-  }
-
   const recent = await syncRecentInbox(scope, connection, {
     maxMessages: 50,
     newerThanDays: 30,
   });
 
-  await rebuildThreadStats(scope);
+  const totalInDb = await countEmailsForConnection(connection.id);
+
+  if (connection.id) {
+    await updateConnectionSyncProgress(connection.id, {
+      sync_cursor: profile.historyId,
+      sync_gmail_total: profile.messagesTotal,
+      sync_progress_synced: totalInDb,
+      sync_status: "running",
+    });
+  }
+
+  await rebuildThreadStatsForConnection(scope, connection.id);
 
   return {
     profile,

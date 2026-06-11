@@ -152,7 +152,11 @@ export async function GET(
       );
     }
 
-    const { connection: conn, error: saveError } = await upsertOrgMailConnection(
+    const {
+      connection: conn,
+      error: saveError,
+      isNew,
+    } = await upsertOrgMailConnection(
       currentMembership.organizationId,
       session.user.id,
       provider,
@@ -184,7 +188,12 @@ export async function GET(
     }
 
     const scope = await resolveMailScope(session.user.id);
-    void syncAllForScope(scope, "bootstrap");
+    void syncAllForScope(scope, "bootstrap", { connectionIds: [conn.id] });
+    if (isNew) {
+      console.log(
+        `[connect] New mailbox ${conn.mailbox_email} queued for full sync`
+      );
+    }
   } else {
     const conn = await upsertMailConnection(session.user.id, provider, {
       mailbox_email: mailboxEmail.toLowerCase(),
