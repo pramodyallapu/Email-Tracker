@@ -73,7 +73,6 @@ async function syncConnections(
     const allowed = new Set(options.connectionIds);
     active = active.filter((c) => allowed.has(c.id));
   }
-  const activeIds = active.map((c) => c.id);
 
   if (mode === "full") {
     const googleConnsForPrep = (
