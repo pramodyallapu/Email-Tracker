@@ -1,5 +1,6 @@
 import { fetchGmailProfileStats } from "@/lib/gmail/bootstrap";
 import { getOrgMailConnections, getMailConnections } from "@/lib/mail/connections";
+import { isMailboxFullSyncComplete } from "@/lib/mail/sync-progress";
 import { resolveMailScope, scopeEmailsFilter, type MailScope } from "@/lib/mail/scope";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { MailConnection } from "@/types/mail";
@@ -84,7 +85,8 @@ async function statForConnection(
   }
 
   const isRunning =
-    conn.sync_status === "running" || Boolean(conn.sync_page_token);
+    !isMailboxFullSyncComplete(conn) &&
+    (conn.sync_status === "running" || Boolean(conn.sync_page_token));
 
   return {
     connectionId: conn.id,

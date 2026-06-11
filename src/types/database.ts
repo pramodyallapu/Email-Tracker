@@ -78,6 +78,7 @@ export interface Database {
           sync_list_query: string | null;
           sync_status: string;
           sync_progress_synced: number;
+          sync_gmail_total: number | null;
           zoho_account_id: string | null;
           zoho_dc: string | null;
           created_at: string;
@@ -98,6 +99,7 @@ export interface Database {
           sync_list_query?: string | null;
           sync_status?: string;
           sync_progress_synced?: number;
+          sync_gmail_total?: number | null;
           zoho_account_id?: string | null;
           zoho_dc?: string | null;
           created_at?: string;
@@ -118,6 +120,7 @@ export interface Database {
           sync_list_query?: string | null;
           sync_status?: string;
           sync_progress_synced?: number;
+          sync_gmail_total?: number | null;
           zoho_account_id?: string | null;
           zoho_dc?: string | null;
           created_at?: string;

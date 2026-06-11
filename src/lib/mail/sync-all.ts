@@ -10,7 +10,9 @@ import { syncRecentInbox } from "@/lib/gmail/recent-sync";
 import { rebuildThreadStats } from "@/lib/mail/rebuild-threads";
 import {
   hasAnyFullSyncPending,
+  isMailboxFullSyncComplete,
   pickNextFullSyncMailbox,
+  reconcileFullSyncCompletion,
   resetFullSyncCursors,
   setConnectionsSyncStatus,
   shouldRunFullSyncBatch,
@@ -71,28 +73,30 @@ async function syncConnections(
     if (options?.reset) {
       await resetFullSyncCursors(activeIds);
     } else {
-      const anyRunning = active.some((c) =>
-        shouldRunFullSyncBatch(c, options)
-      );
-      if (!anyRunning) {
-        const googleConns = active.filter((c) => c.provider === "google");
-        const neverStarted = googleConns
-          .filter((c) => (c.sync_progress_synced ?? 0) === 0)
-          .map((c) => c.id);
-        const resumeIds = googleConns
-          .filter(
-            (c) =>
-              (c.sync_progress_synced ?? 0) > 0 &&
-              c.sync_status !== "running"
-          )
-          .map((c) => c.id);
+      const googleConns = active.filter((c) => c.provider === "google");
+      await reconcileFullSyncCompletion(googleConns);
 
-        if (neverStarted.length > 0) {
-          await startGapFillScan(neverStarted);
-        }
-        if (resumeIds.length > 0) {
-          await setConnectionsSyncStatus(resumeIds, "running");
-        }
+      const neverStarted = googleConns
+        .filter(
+          (c) =>
+            (c.sync_progress_synced ?? 0) === 0 &&
+            !isMailboxFullSyncComplete(c)
+        )
+        .map((c) => c.id);
+      const resumeIds = googleConns
+        .filter(
+          (c) =>
+            !isMailboxFullSyncComplete(c) &&
+            (c.sync_progress_synced ?? 0) > 0 &&
+            c.sync_status !== "running"
+        )
+        .map((c) => c.id);
+
+      if (neverStarted.length > 0) {
+        await startGapFillScan(neverStarted);
+      }
+      if (resumeIds.length > 0) {
+        await setConnectionsSyncStatus(resumeIds, "running");
       }
     }
     active = (await reloadConnections(scope)).filter(
@@ -187,8 +191,7 @@ async function syncConnections(
 
     const completeIds = reloaded
       .filter(
-        (c) =>
-          c.provider === "google" && !shouldRunFullSyncBatch(c, { reset: false })
+        (c) => c.provider === "google" && isMailboxFullSyncComplete(c)
       )
       .map((c) => c.id);
 

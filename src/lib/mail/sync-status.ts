@@ -39,10 +39,14 @@ export function enrichMailboxStat(stat: MailboxLiveStat): EnrichedMailboxStat {
     };
   }
 
-  const notSynced = Math.max(0, stat.messagesTotal - stat.syncedMessages);
+  const effectiveSynced = Math.min(stat.syncedMessages, stat.messagesTotal);
+  const notSynced = Math.max(0, stat.messagesTotal - effectiveSynced);
   const syncPercent =
     stat.messagesTotal > 0
-      ? Math.min(100, Math.round((stat.syncedMessages / stat.messagesTotal) * 100))
+      ? Math.min(
+          100,
+          Math.round((effectiveSynced / stat.messagesTotal) * 100)
+        )
       : stat.syncedMessages > 0
         ? 100
         : 0;
@@ -56,7 +60,7 @@ export function enrichMailboxStat(stat: MailboxLiveStat): EnrichedMailboxStat {
       stat.messagesTotal != null
         ? `Syncing… ${formatCount(stat.syncedMessages)} of ${formatCount(stat.messagesTotal)} messages`
         : `Syncing… ${formatCount(stat.syncedMessages)} messages so far`;
-  } else if (syncPercent >= 98) {
+  } else if (syncPercent >= 98 || stat.syncedMessages >= stat.messagesTotal) {
     coverageStatus = "complete";
     coverageLabel = "Fully synced";
   } else if (stat.syncedMessages === 0) {

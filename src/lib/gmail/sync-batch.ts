@@ -11,7 +11,10 @@ import {
   resolveGmailListResume,
 } from "@/lib/gmail/sync-resume";
 import { scopeEmailsFilter, type MailScope } from "@/lib/mail/scope";
-import { updateConnectionSyncProgress } from "@/lib/mail/sync-progress";
+import {
+  finalizeFullSyncComplete,
+  updateConnectionSyncProgress,
+} from "@/lib/mail/sync-progress";
 import type { MailConnection } from "@/types/mail";
 
 /** Max Gmail metadata fetches per API request (metadata only — no body). */
@@ -175,15 +178,23 @@ export async function fullGmailSyncBatch(
 
   const totalInDb = await countSyncedForConnection(connection.id);
   const listHasMore = Boolean(pageToken);
+  const countComplete =
+    messagesTotal > 0 && totalInDb >= messagesTotal - 5;
   const countIncomplete =
     messagesTotal > 0 && totalInDb < messagesTotal - 5;
-  const hasMore = listHasMore || countIncomplete;
-  const effectivelyComplete = !hasMore;
+  const hasMore = countComplete
+    ? false
+    : listHasMore || countIncomplete;
+  const effectivelyComplete = countComplete || !hasMore;
 
   let nextListQuery: string | null = listQuery;
   let nextPageToken: string | null = null;
 
-  if (effectivelyComplete) {
+  if (countComplete) {
+    await finalizeFullSyncComplete(connection.id, messagesTotal);
+    nextListQuery = null;
+    nextPageToken = null;
+  } else if (effectivelyComplete) {
     nextListQuery = null;
     nextPageToken = null;
   } else if (listHasMore) {
@@ -200,14 +211,17 @@ export async function fullGmailSyncBatch(
     }
   }
 
-  await updateConnectionSyncProgress(connection.id, {
-    sync_page_token: nextPageToken,
-    sync_list_query: nextListQuery,
-    sync_cursor:
-      effectivelyComplete && historyId ? historyId : connection.sync_cursor,
-    sync_status: hasMore ? "running" : "idle",
-    sync_progress_synced: totalInDb,
-  });
+  if (!countComplete) {
+    await updateConnectionSyncProgress(connection.id, {
+      sync_page_token: nextPageToken,
+      sync_list_query: nextListQuery,
+      sync_cursor:
+        effectivelyComplete && historyId ? historyId : connection.sync_cursor,
+      sync_status: hasMore ? "running" : "idle",
+      sync_progress_synced: totalInDb,
+      sync_gmail_total: messagesTotal,
+    });
+  }
 
   if (synced === 0 && errors > 0 && lastUpsertError) {
     console.error(
