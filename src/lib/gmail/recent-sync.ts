@@ -1,25 +1,12 @@
-import { createAdminClient } from "@/lib/supabase/admin";
 import { getGmailClient, refreshConnectionToken } from "@/lib/gmail/client";
-import { parseMessage } from "@/lib/gmail/parser";
-import { toEmailInsert } from "@/lib/mail/parser";
-import { emailUpsertConflict, type MailScope } from "@/lib/mail/scope";
+import {
+  bulkUpsertParsedEmails,
+  fetchGmailMetadataBatch,
+} from "@/lib/gmail/metadata-sync";
+import type { MailScope } from "@/lib/mail/scope";
 import type { MailConnection } from "@/types/mail";
 
-const METADATA_HEADERS = [
-  "From",
-  "To",
-  "Cc",
-  "Subject",
-  "Date",
-  "References",
-  "In-Reply-To",
-];
-
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Sync recent inbox messages only — not full mailbox history. */
+/** Sync recent inbox metadata only — no body or attachments. */
 export async function syncRecentInbox(
   scope: MailScope,
   connection: MailConnection,
@@ -30,18 +17,17 @@ export async function syncRecentInbox(
 
   await refreshConnectionToken(connection);
   const gmail = await getGmailClient(connection);
-  const supabase = createAdminClient();
   const mailboxEmails = [connection.mailbox_email.toLowerCase()];
 
   let synced = 0;
   let errors = 0;
   let pageToken: string | undefined;
-  let fetched = 0;
+  const toFetch: string[] = [];
 
   do {
     const listRes = await gmail.users.messages.list({
       userId: "me",
-      maxResults: Math.min(50, maxMessages - fetched),
+      maxResults: Math.min(50, maxMessages - toFetch.length),
       pageToken,
       q: `in:inbox newer_than:${newerThanDays}d`,
     });
@@ -52,34 +38,25 @@ export async function syncRecentInbox(
     for (const item of messageIds) {
       const msgId = item?.id;
       if (!msgId) continue;
-
-      try {
-        const detail = await gmail.users.messages.get({
-          userId: "me",
-          id: msgId,
-          format: "metadata",
-          metadataHeaders: METADATA_HEADERS,
-        });
-
-        const parsed = parseMessage(detail.data, mailboxEmails);
-        if (!parsed) continue;
-
-        const { error } = await supabase.from("emails").upsert(
-          toEmailInsert(parsed, scope, "google", connection.id),
-          { onConflict: emailUpsertConflict(scope) }
-        );
-
-        if (error) errors += 1;
-        else synced += 1;
-      } catch {
-        errors += 1;
-      }
-
-      fetched += 1;
-      if (fetched % 10 === 0) await delay(50);
-      if (fetched >= maxMessages) break;
+      toFetch.push(msgId);
+      if (toFetch.length >= maxMessages) break;
     }
-  } while (pageToken && fetched < maxMessages);
+  } while (pageToken && toFetch.length < maxMessages);
+
+  if (toFetch.length === 0) {
+    return { synced: 0, errors: 0 };
+  }
+
+  const { parsed, errors: fetchErrors } = await fetchGmailMetadataBatch(
+    gmail,
+    toFetch,
+    mailboxEmails
+  );
+  errors += fetchErrors;
+
+  const upsert = await bulkUpsertParsedEmails(scope, connection.id, parsed);
+  synced = upsert.synced;
+  errors += upsert.errors;
 
   return { synced, errors };
 }

@@ -74,6 +74,13 @@ export default async function DashboardPage({
     getAudienceStats(userId, slaConfig?.threshold_hours ?? 24),
     getEnrichedMailboxStats(userId),
   ]);
+  const filteredMailboxStats = mailboxConn
+    ? mailboxStats.filter(
+        (m) =>
+          m.connectionId === mailboxConn.id ||
+          m.email.toLowerCase() === mailboxConn.mailbox_email.toLowerCase()
+      )
+    : mailboxStats;
 
   const emailsToday = kpi.today.totalReceived + kpi.today.totalSent;
   const trendLabel =
@@ -102,7 +109,7 @@ export default async function DashboardPage({
         </Suspense>
       </div>
 
-      <MailboxStatsPanel stats={mailboxStats} />
+      <MailboxStatsPanel stats={filteredMailboxStats} />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard

@@ -1,20 +1,13 @@
 import { getGmailClient, refreshConnectionToken } from "@/lib/gmail/client";
+import {
+  bulkUpsertParsedEmails,
+  GMAIL_METADATA_HEADERS,
+} from "@/lib/gmail/metadata-sync";
 import { parseMessage } from "@/lib/gmail/parser";
 import { getOrgMailConnections, getMailConnections } from "@/lib/mail/connections";
-import { toEmailInsert } from "@/lib/mail/parser";
-import { emailUpsertConflict, resolveMailScope, type MailScope } from "@/lib/mail/scope";
+import { resolveMailScope, type MailScope } from "@/lib/mail/scope";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { MailConnection } from "@/types/mail";
-
-const METADATA_HEADERS = [
-  "From",
-  "To",
-  "Cc",
-  "Subject",
-  "Date",
-  "References",
-  "In-Reply-To",
-];
 
 async function resolveConnection(
   scope: MailScope,
@@ -61,30 +54,21 @@ export async function syncGmailThread(
 
   await refreshConnectionToken(conn);
   const gmail = await getGmailClient(conn);
-  const supabase = createAdminClient();
   const mailboxEmails = [conn.mailbox_email.toLowerCase()];
 
   const threadRes = await gmail.users.threads.get({
     userId: "me",
     id: gmailThreadId,
     format: "metadata",
-    metadataHeaders: METADATA_HEADERS,
+    metadataHeaders: GMAIL_METADATA_HEADERS,
   });
 
   const messages = threadRes.data.messages ?? [];
-  let synced = 0;
+  const parsed = messages
+    .map((msg) => parseMessage(msg, mailboxEmails))
+    .filter((row): row is NonNullable<typeof row> => Boolean(row));
 
-  for (const msg of messages) {
-    const parsed = parseMessage(msg, mailboxEmails);
-    if (!parsed) continue;
-
-    const { error } = await supabase.from("emails").upsert(
-      toEmailInsert(parsed, scope, "google", conn.id),
-      { onConflict: emailUpsertConflict(scope) }
-    );
-
-    if (!error) synced += 1;
-  }
+  const { synced } = await bulkUpsertParsedEmails(scope, conn.id, parsed);
 
   return { synced, total: messages.length };
 }

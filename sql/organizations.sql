@@ -75,13 +75,12 @@ ALTER TABLE internal_domains
 ALTER TABLE company_contacts
   ADD COLUMN IF NOT EXISTS organization_id uuid REFERENCES organizations(id) ON DELETE CASCADE;
 
+-- Non-partial index required for Supabase upsert onConflict
 CREATE UNIQUE INDEX IF NOT EXISTS emails_org_provider_message_uidx
-  ON emails (organization_id, provider, gmail_message_id)
-  WHERE organization_id IS NOT NULL;
+  ON emails (organization_id, provider, gmail_message_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS threads_org_provider_thread_uidx
-  ON threads (organization_id, provider, gmail_thread_id)
-  WHERE organization_id IS NOT NULL;
+  ON threads (organization_id, provider, gmail_thread_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS metrics_daily_org_date_uidx
   ON metrics_daily (organization_id, date)
@@ -163,27 +162,11 @@ BEGIN
   END LOOP;
 END $$;
 
--- ── Thread stats trigger: org-scoped ──────────────────────────────
+-- ── Thread stats trigger: lightweight (reply stats rebuilt after bulk sync) ──
 
 CREATE OR REPLACE FUNCTION refresh_thread_stats()
 RETURNS TRIGGER AS $$
-DECLARE
-  v_last_inbound timestamptz;
-  v_reply_outbound timestamptz;
-  v_reply_secs integer;
-  v_from_name text;
-  v_from_address text;
-  v_scope_col text;
-  v_scope_val uuid;
 BEGIN
-  IF NEW.organization_id IS NOT NULL THEN
-    v_scope_col := 'organization_id';
-    v_scope_val := NEW.organization_id;
-  ELSE
-    v_scope_col := 'user_id';
-    v_scope_val := NEW.user_id;
-  END IF;
-
   INSERT INTO threads (
     user_id, organization_id, provider, gmail_thread_id, subject, participants,
     first_received_at, last_message_at, message_count, inbound_count, outbound_count
@@ -200,103 +183,31 @@ BEGIN
 
   IF NEW.organization_id IS NOT NULL THEN
     UPDATE threads SET
-      subject = COALESCE(NEW.subject, threads.subject),
+      subject = COALESCE(threads.subject, NEW.subject),
       last_message_at = GREATEST(threads.last_message_at, NEW.received_at),
       message_count = threads.message_count + 1,
       inbound_count = threads.inbound_count + CASE WHEN NOT NEW.is_sent THEN 1 ELSE 0 END,
       outbound_count = threads.outbound_count + CASE WHEN NEW.is_sent THEN 1 ELSE 0 END,
-      updated_at = now()
-    WHERE organization_id = NEW.organization_id
-      AND provider = NEW.provider
-      AND gmail_thread_id = NEW.gmail_thread_id;
-  ELSE
-    UPDATE threads SET
-      subject = COALESCE(NEW.subject, threads.subject),
-      last_message_at = GREATEST(threads.last_message_at, NEW.received_at),
-      message_count = threads.message_count + 1,
-      inbound_count = threads.inbound_count + CASE WHEN NOT NEW.is_sent THEN 1 ELSE 0 END,
-      outbound_count = threads.outbound_count + CASE WHEN NEW.is_sent THEN 1 ELSE 0 END,
-      updated_at = now()
-    WHERE user_id = NEW.user_id
-      AND provider = NEW.provider
-      AND gmail_thread_id = NEW.gmail_thread_id;
-  END IF;
-
-  IF NEW.organization_id IS NOT NULL THEN
-    SELECT MAX(received_at) INTO v_last_inbound
-    FROM emails
-    WHERE organization_id = NEW.organization_id
-      AND provider = NEW.provider
-      AND gmail_thread_id = NEW.gmail_thread_id AND is_sent = false;
-
-    SELECT MIN(received_at) INTO v_reply_outbound
-    FROM emails
-    WHERE organization_id = NEW.organization_id
-      AND provider = NEW.provider
-      AND gmail_thread_id = NEW.gmail_thread_id AND is_sent = true
-      AND v_last_inbound IS NOT NULL AND received_at > v_last_inbound;
-  ELSE
-    SELECT MAX(received_at) INTO v_last_inbound
-    FROM emails
-    WHERE user_id = NEW.user_id
-      AND provider = NEW.provider
-      AND gmail_thread_id = NEW.gmail_thread_id AND is_sent = false;
-
-    SELECT MIN(received_at) INTO v_reply_outbound
-    FROM emails
-    WHERE user_id = NEW.user_id
-      AND provider = NEW.provider
-      AND gmail_thread_id = NEW.gmail_thread_id AND is_sent = true
-      AND v_last_inbound IS NOT NULL AND received_at > v_last_inbound;
-  END IF;
-
-  IF v_last_inbound IS NOT NULL AND v_reply_outbound IS NOT NULL THEN
-    v_reply_secs := EXTRACT(EPOCH FROM (v_reply_outbound - v_last_inbound))::integer;
-  END IF;
-
-  IF NEW.organization_id IS NOT NULL THEN
-    SELECT from_name, from_address
-    INTO v_from_name, v_from_address
-    FROM emails
-    WHERE organization_id = NEW.organization_id
-      AND provider = NEW.provider
-      AND gmail_thread_id = NEW.gmail_thread_id AND is_sent = false
-    ORDER BY received_at ASC
-    LIMIT 1;
-
-    UPDATE threads SET
-      first_received_at = v_last_inbound,
-      first_replied_at = v_reply_outbound,
-      reply_time_seconds = v_reply_secs,
-      is_replied = (v_last_inbound IS NOT NULL AND v_reply_outbound IS NOT NULL),
-      participants = CASE
-        WHEN v_from_address IS NOT NULL THEN
-          ARRAY[COALESCE(v_from_name || ' <' || v_from_address || '>', v_from_address)]
-        ELSE threads.participants
+      first_received_at = CASE
+        WHEN NOT NEW.is_sent THEN
+          LEAST(COALESCE(threads.first_received_at, NEW.received_at), NEW.received_at)
+        ELSE threads.first_received_at
       END,
       updated_at = now()
     WHERE organization_id = NEW.organization_id
       AND provider = NEW.provider
       AND gmail_thread_id = NEW.gmail_thread_id;
   ELSE
-    SELECT from_name, from_address
-    INTO v_from_name, v_from_address
-    FROM emails
-    WHERE user_id = NEW.user_id
-      AND provider = NEW.provider
-      AND gmail_thread_id = NEW.gmail_thread_id AND is_sent = false
-    ORDER BY received_at ASC
-    LIMIT 1;
-
     UPDATE threads SET
-      first_received_at = v_last_inbound,
-      first_replied_at = v_reply_outbound,
-      reply_time_seconds = v_reply_secs,
-      is_replied = (v_last_inbound IS NOT NULL AND v_reply_outbound IS NOT NULL),
-      participants = CASE
-        WHEN v_from_address IS NOT NULL THEN
-          ARRAY[COALESCE(v_from_name || ' <' || v_from_address || '>', v_from_address)]
-        ELSE threads.participants
+      subject = COALESCE(threads.subject, NEW.subject),
+      last_message_at = GREATEST(threads.last_message_at, NEW.received_at),
+      message_count = threads.message_count + 1,
+      inbound_count = threads.inbound_count + CASE WHEN NOT NEW.is_sent THEN 1 ELSE 0 END,
+      outbound_count = threads.outbound_count + CASE WHEN NEW.is_sent THEN 1 ELSE 0 END,
+      first_received_at = CASE
+        WHEN NOT NEW.is_sent THEN
+          LEAST(COALESCE(threads.first_received_at, NEW.received_at), NEW.received_at)
+        ELSE threads.first_received_at
       END,
       updated_at = now()
     WHERE user_id = NEW.user_id

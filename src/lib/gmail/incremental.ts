@@ -3,21 +3,13 @@ import { getGmailClient } from "@/lib/gmail/client";
 import { bootstrapGmailConnection } from "@/lib/gmail/bootstrap";
 import { syncRecentInbox } from "@/lib/gmail/recent-sync";
 import { rebuildThreadStats } from "@/lib/mail/rebuild-threads";
-import { parseMessage } from "@/lib/gmail/parser";
+import {
+  bulkUpsertParsedEmails,
+  fetchGmailMetadataBatch,
+} from "@/lib/gmail/metadata-sync";
 import { getMailboxEmails } from "@/lib/mail/mailboxes";
-import { toEmailInsert } from "@/lib/mail/parser";
-import { emailUpsertConflict, type MailScope } from "@/lib/mail/scope";
+import type { MailScope } from "@/lib/mail/scope";
 import type { MailConnection } from "@/types/mail";
-
-const METADATA_HEADERS = [
-  "From",
-  "To",
-  "Cc",
-  "Subject",
-  "Date",
-  "References",
-  "In-Reply-To",
-];
 
 export async function incrementalSync(
   scope: MailScope,
@@ -33,7 +25,7 @@ export async function incrementalSync(
   const gmail = await getGmailClient(connection);
   const supabase = createAdminClient();
   const mailboxEmails = await getMailboxEmails(scope);
-  let synced = 0;
+  const newMessageIds: string[] = [];
 
   try {
     const historyRes = await gmail.users.history.list({
@@ -48,29 +40,28 @@ export async function incrementalSync(
     for (const record of history) {
       for (const added of record.messagesAdded ?? []) {
         const messageId = added.message?.id;
-        if (!messageId) continue;
-
-        const detail = await gmail.users.messages.get({
-          userId: "me",
-          id: messageId,
-          format: "metadata",
-          metadataHeaders: METADATA_HEADERS,
-        });
-
-        const parsed = parseMessage(detail.data, mailboxEmails);
-        if (!parsed) continue;
-
-        await supabase.from("emails").upsert(
-          toEmailInsert(parsed, scope, "google", connection.id),
-          { onConflict: emailUpsertConflict(scope) }
-        );
-
-        synced += 1;
+        if (messageId) newMessageIds.push(messageId);
       }
     }
 
-    if (synced > 0) {
-      await rebuildThreadStats(scope);
+    let synced = 0;
+
+    if (newMessageIds.length > 0) {
+      const { parsed } = await fetchGmailMetadataBatch(
+        gmail,
+        newMessageIds,
+        mailboxEmails
+      );
+      const upsert = await bulkUpsertParsedEmails(
+        scope,
+        connection.id,
+        parsed
+      );
+      synced = upsert.synced;
+
+      if (synced > 0) {
+        await rebuildThreadStats(scope);
+      }
     }
 
     if (newHistoryId && connection.id) {
@@ -79,6 +70,8 @@ export async function incrementalSync(
         .update({ sync_cursor: newHistoryId })
         .eq("id", connection.id);
     }
+
+    return { synced };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "";
     if (message.includes("404") || message.includes("historyId")) {
@@ -91,6 +84,4 @@ export async function incrementalSync(
     }
     throw err;
   }
-
-  return { synced };
 }

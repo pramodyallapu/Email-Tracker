@@ -1,7 +1,6 @@
 "use client";
 
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 export type MailboxFilterOption = {
   id: string;
@@ -15,61 +14,49 @@ export function MailboxFilter({
   mailboxes: MailboxFilterOption[];
   basePath: string;
 }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const current = searchParams.get("mailbox") ?? "";
 
   if (mailboxes.length === 0) return null;
 
-  function hrefFor(mailbox: string | null) {
+  const active =
+    mailboxes.find(
+      (m) => m.id === current || m.email.toLowerCase() === current.toLowerCase()
+    ) ?? null;
+
+  const selectValue = active?.email ?? "";
+
+  function navigate(mailbox: string | null) {
     const params = new URLSearchParams(searchParams.toString());
     if (mailbox) params.set("mailbox", mailbox);
     else params.delete("mailbox");
     params.delete("page");
     const q = params.toString();
-    return q ? `${basePath}?${q}` : basePath;
+    router.push(q ? `${basePath}?${q}` : basePath);
   }
 
-  const activeEmail =
-    mailboxes.find(
-      (m) => m.id === current || m.email.toLowerCase() === current.toLowerCase()
-    )?.email ?? null;
-
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="text-sm text-gray-500">Mailbox:</span>
-      <Link
-        href={hrefFor(null)}
-        className={`rounded-full px-3 py-1 text-sm ${
-          !current
-            ? "bg-indigo-600 text-white"
-            : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-        }`}
+    <div className="flex items-center gap-2">
+      <label htmlFor="mailbox-filter" className="text-sm text-gray-500">
+        Mailbox
+      </label>
+      <select
+        id="mailbox-filter"
+        value={selectValue}
+        onChange={(e) => {
+          const value = e.target.value;
+          navigate(value || null);
+        }}
+        className="min-w-[220px] max-w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
       >
-        All ({mailboxes.length})
-      </Link>
-      {mailboxes.map((mb) => {
-        const isActive =
-          current === mb.id ||
-          current.toLowerCase() === mb.email.toLowerCase();
-        return (
-          <Link
-            key={mb.id}
-            href={hrefFor(mb.email)}
-            className={`rounded-full px-3 py-1 text-sm ${
-              isActive
-                ? "bg-indigo-600 text-white"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            }`}
-          >
+        <option value="">All mailboxes ({mailboxes.length})</option>
+        {mailboxes.map((mb) => (
+          <option key={mb.id} value={mb.email}>
             {mb.email}
-          </Link>
-        );
-      })}
-      {activeEmail && (
-        <span className="text-xs text-gray-400">
-          Showing metrics for {activeEmail} only
-        </span>
-      )}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

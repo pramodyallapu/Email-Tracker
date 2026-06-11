@@ -75,6 +75,7 @@ export interface Database {
           token_expiry: string | null;
           sync_cursor: string | null;
           sync_page_token: string | null;
+          sync_list_query: string | null;
           sync_status: string;
           sync_progress_synced: number;
           zoho_account_id: string | null;
@@ -94,6 +95,7 @@ export interface Database {
           token_expiry?: string | null;
           sync_cursor?: string | null;
           sync_page_token?: string | null;
+          sync_list_query?: string | null;
           sync_status?: string;
           sync_progress_synced?: number;
           zoho_account_id?: string | null;
@@ -113,6 +115,7 @@ export interface Database {
           token_expiry?: string | null;
           sync_cursor?: string | null;
           sync_page_token?: string | null;
+          sync_list_query?: string | null;
           sync_status?: string;
           sync_progress_synced?: number;
           zoho_account_id?: string | null;

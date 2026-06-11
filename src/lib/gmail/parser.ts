@@ -22,6 +22,7 @@ function parseFrom(raw: string): { address: string; name?: string } {
   };
 }
 
+/** Metadata only — Gmail format=metadata (no body or attachments). */
 export function parseMessage(
   rawMsg: gmail_v1.Schema$Message,
   mailboxEmails: string[] = []

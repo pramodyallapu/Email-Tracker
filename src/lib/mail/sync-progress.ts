@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { MailConnection } from "@/types/mail";
 
 export type ConnectionSyncStatus = "idle" | "running" | "error";
 
@@ -31,7 +32,7 @@ export async function setConnectionsSyncStatus(
   }
 }
 
-/** Resume scanning for missing messages without wiping progress. */
+/** Mark never-started mailboxes as running (does not wipe saved scan position). */
 export async function startGapFillScan(
   connectionIds: string[]
 ): Promise<void> {
@@ -41,7 +42,6 @@ export async function startGapFillScan(
   const { error } = await supabase
     .from("mail_connections")
     .update({
-      sync_page_token: null,
       sync_status: "running",
       updated_at: new Date().toISOString(),
     })
@@ -62,6 +62,7 @@ export async function resetFullSyncCursors(
     .from("mail_connections")
     .update({
       sync_page_token: null,
+      sync_list_query: null,
       sync_status: "running",
       sync_progress_synced: 0,
       updated_at: new Date().toISOString(),
@@ -83,6 +84,7 @@ export async function updateConnectionSyncProgress(
   connectionId: string,
   payload: {
     sync_page_token?: string | null;
+    sync_list_query?: string | null;
     sync_status?: ConnectionSyncStatus;
     sync_progress_synced?: number;
     sync_cursor?: string | null;
@@ -135,6 +137,7 @@ export function shouldRunFullSyncBatch(
   conn: {
     sync_status?: string | null;
     sync_page_token?: string | null;
+    sync_progress_synced?: number | null;
   },
   options?: { reset?: boolean }
 ): boolean {
@@ -142,4 +145,38 @@ export function shouldRunFullSyncBatch(
   if (conn.sync_status === "running") return true;
   if (conn.sync_page_token) return true;
   return false;
+}
+
+export function isFullSyncPending(conn: MailConnection): boolean {
+  if (conn.provider !== "google") return false;
+  return shouldRunFullSyncBatch(conn);
+}
+
+/** Fair round-robin: one mailbox batch per API request (avoids timeouts with 2+ mailboxes). */
+export function pickNextFullSyncMailbox(
+  connections: MailConnection[],
+  options?: { reset?: boolean }
+): MailConnection | null {
+  const pending = connections.filter(
+    (c) => c.provider === "google" && shouldRunFullSyncBatch(c, options)
+  );
+  if (pending.length === 0) return null;
+
+  return pending.sort((a, b) => {
+    const aToken = a.sync_page_token ? 0 : 1;
+    const bToken = b.sync_page_token ? 0 : 1;
+    if (aToken !== bToken) return aToken - bToken;
+    const ta = new Date(a.updated_at ?? 0).getTime();
+    const tb = new Date(b.updated_at ?? 0).getTime();
+    return ta - tb;
+  })[0];
+}
+
+export function hasAnyFullSyncPending(
+  connections: MailConnection[],
+  options?: { reset?: boolean }
+): boolean {
+  return connections.some(
+    (c) => c.provider === "google" && shouldRunFullSyncBatch(c, options)
+  );
 }

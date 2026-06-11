@@ -92,22 +92,24 @@ export function useMailSync(initialCoverage: EnrichedMailboxStat[]) {
           return;
         }
 
-        const needsFullRescan = coverage.some((m) => {
-          if (!m.messagesTotal || m.messagesTotal === 0) return true;
-          const pct = (m.syncedMessages / m.messagesTotal) * 100;
-          return pct < 90;
-        });
+        const sessionStartSynced = new Map(
+          coverage.map((m) => [m.connectionId, m.syncedMessages])
+        );
 
-        let reset = needsFullRescan;
+        // Never wipe scan position when mail is already partially synced.
+        let reset = coverage.every(
+          (m) => m.syncedMessages === 0 && m.syncStatus !== "running"
+        );
+
         let hasMore = true;
         let totalSynced = 0;
         let lastMailboxes: MailboxSyncResult[] = [];
         let lastErrors = 0;
         let lastCoverage = coverage;
 
-        if (!needsFullRescan) {
+        if (!reset) {
           setStatusMessage(
-            "Almost fully synced — filling remaining messages only (fast)…"
+            "Resuming full sync from last position (not from the beginning)…"
           );
         }
 
@@ -144,8 +146,35 @@ export function useMailSync(initialCoverage: EnrichedMailboxStat[]) {
           }
 
           if (hasMore) {
+            const coverageNow: EnrichedMailboxStat[] =
+              data.coverage ?? lastCoverage;
+            const running = coverageNow.filter(
+              (m: EnrichedMailboxStat) => m.syncStatus === "running"
+            );
+            const progress = coverageNow
+              .filter(
+                (m: EnrichedMailboxStat) =>
+                  m.syncStatus === "running" ||
+                  (m.messagesTotal != null &&
+                    m.syncedMessages < m.messagesTotal - 5)
+              )
+              .map((m: EnrichedMailboxStat) => {
+                const start = sessionStartSynced.get(m.connectionId) ?? 0;
+                const added = Math.max(0, m.syncedMessages - start);
+                const pct =
+                  m.messagesTotal && m.messagesTotal > 0
+                    ? Math.round((m.syncedMessages / m.messagesTotal) * 100)
+                    : null;
+                const base = m.messagesTotal
+                  ? `${m.email.split("@")[0]}: ${formatCount(m.syncedMessages)}/${formatCount(m.messagesTotal)}${pct != null ? ` (${pct}%)` : ""}`
+                  : `${m.email.split("@")[0]}: ${formatCount(m.syncedMessages)}`;
+                return added > 0 ? `${base} +${formatCount(added)}` : base;
+              })
+              .join(" · ");
             setStatusMessage(
-              `Full sync in progress… ${formatCount(totalSynced)} messages processed this session`
+              progress
+                ? `Full sync… ${progress}`
+                : `Full sync in progress… ${formatCount(totalSynced)} new messages`
             );
           }
         }

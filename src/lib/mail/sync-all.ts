@@ -9,6 +9,8 @@ import { incrementalSync as incrementalGmailSync } from "@/lib/gmail/incremental
 import { syncRecentInbox } from "@/lib/gmail/recent-sync";
 import { rebuildThreadStats } from "@/lib/mail/rebuild-threads";
 import {
+  hasAnyFullSyncPending,
+  pickNextFullSyncMailbox,
   resetFullSyncCursors,
   setConnectionsSyncStatus,
   shouldRunFullSyncBatch,
@@ -73,13 +75,23 @@ async function syncConnections(
         shouldRunFullSyncBatch(c, options)
       );
       if (!anyRunning) {
-        const googleIds = active
-          .filter((c) => c.provider === "google")
+        const googleConns = active.filter((c) => c.provider === "google");
+        const neverStarted = googleConns
+          .filter((c) => (c.sync_progress_synced ?? 0) === 0)
           .map((c) => c.id);
-        await startGapFillScan(googleIds);
-        for (const conn of active) {
-          if (conn.provider !== "google") continue;
-          await incrementalGmailSync(scope, conn);
+        const resumeIds = googleConns
+          .filter(
+            (c) =>
+              (c.sync_progress_synced ?? 0) > 0 &&
+              c.sync_status !== "running"
+          )
+          .map((c) => c.id);
+
+        if (neverStarted.length > 0) {
+          await startGapFillScan(neverStarted);
+        }
+        if (resumeIds.length > 0) {
+          await setConnectionsSyncStatus(resumeIds, "running");
         }
       }
     }
@@ -87,6 +99,9 @@ async function syncConnections(
       (c) => c.access_token || c.refresh_token
     );
   }
+
+  const nextFullSyncMailbox =
+    mode === "full" ? pickNextFullSyncMailbox(active, options) : null;
 
   for (const conn of active) {
     let mailboxSynced = 0;
@@ -99,22 +114,18 @@ async function syncConnections(
         if (mode === "full") {
           if (!shouldRunFullSyncBatch(conn, options)) {
             skipped = "Gmail sync complete for this mailbox";
-            mailboxes.push({
-              email: conn.mailbox_email,
-              provider: conn.provider,
-              newSynced: 0,
-              errors: 0,
-              hasMore: false,
-              skipped,
-            });
-            continue;
+          } else if (conn.id !== nextFullSyncMailbox?.id) {
+            skipped = "Queued — syncing other mailboxes in parallel rotation";
+            mailboxHasMore = true;
+            hasMore = true;
+          } else {
+            const result = await fullGmailSyncBatch(scope, conn);
+            mailboxSynced = result.synced;
+            mailboxErrors = result.errors;
+            mailboxHasMore = result.hasMore;
+            total += result.total;
+            if (result.hasMore) hasMore = true;
           }
-          const result = await fullGmailSyncBatch(scope, conn);
-          mailboxSynced = result.synced;
-          mailboxErrors = result.errors;
-          mailboxHasMore = result.hasMore;
-          total += result.total;
-          if (result.hasMore) hasMore = true;
         } else if (mode === "bootstrap") {
           const result = await bootstrapGmailConnection(scope, conn);
           mailboxSynced = result.recentSynced;
@@ -168,11 +179,38 @@ async function syncConnections(
     }
   }
 
-  if (mode === "full" && !hasMore) {
-    await setConnectionsSyncStatus(activeIds, "idle");
+  if (mode === "full") {
+    const reloaded = (await reloadConnections(scope)).filter(
+      (c) => c.access_token || c.refresh_token
+    );
+    hasMore = hasAnyFullSyncPending(reloaded, { reset: false });
+
+    const completeIds = reloaded
+      .filter(
+        (c) =>
+          c.provider === "google" && !shouldRunFullSyncBatch(c, { reset: false })
+      )
+      .map((c) => c.id);
+
+    if (completeIds.length > 0) {
+      await setConnectionsSyncStatus(completeIds, "idle");
+    }
+
+    if (!hasMore) {
+      await setConnectionsSyncStatus(
+        reloaded.map((c) => c.id),
+        "idle"
+      );
+    }
   }
 
-  if (mode !== "bootstrap") {
+  // Defer full thread rebuild until every mailbox finishes (146k+ rows).
+  const shouldRebuildThreads =
+    mode === "bootstrap" ||
+    mode === "quick" ||
+    (mode === "full" && !hasMore);
+
+  if (shouldRebuildThreads) {
     await rebuildThreadStats(scope);
   }
 
