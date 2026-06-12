@@ -4,7 +4,13 @@ import type { MailConnection } from "@/types/mail";
 
 export type ConnectionSyncStatus = "idle" | "running" | "error";
 
-const COMPLETE_TOLERANCE = 5;
+const COMPLETE_TOLERANCE_MIN = 5;
+
+/** Allow small gaps (deleted mail, duplicates) — scales with mailbox size. */
+export function syncCompleteTolerance(messagesTotal: number): number {
+  if (messagesTotal <= 0) return COMPLETE_TOLERANCE_MIN;
+  return Math.max(COMPLETE_TOLERANCE_MIN, Math.floor(messagesTotal * 0.005));
+}
 
 function isMissingColumnError(message: string): boolean {
   return (
@@ -22,7 +28,7 @@ export function isMailboxFullSyncComplete(conn: MailConnection): boolean {
   const synced = conn.sync_progress_synced ?? 0;
   const total = conn.sync_gmail_total;
   if (total != null && total > 0) {
-    return synced >= total - COMPLETE_TOLERANCE;
+    return synced >= total - syncCompleteTolerance(total);
   }
   return false;
 }
@@ -159,7 +165,7 @@ export async function reconcileFullSyncCompletion(
     if (
       messagesTotal != null &&
       messagesTotal > 0 &&
-      synced >= messagesTotal - COMPLETE_TOLERANCE
+      synced >= messagesTotal - syncCompleteTolerance(messagesTotal)
     ) {
       console.log(
         `[sync:${conn.mailbox_email}] complete synced=${synced} gmail=${messagesTotal} — clearing scan cursor`
@@ -239,7 +245,7 @@ export function isFullSyncPending(conn: MailConnection): boolean {
   return shouldRunFullSyncBatch(conn);
 }
 
-/** Finish small / nearly-done mailboxes first; then large backlogs. */
+/** Rotate across mailboxes so one nearly-done mailbox cannot block the rest. */
 export function pickNextFullSyncMailbox(
   connections: MailConnection[],
   options?: { reset?: boolean }
@@ -250,12 +256,9 @@ export function pickNextFullSyncMailbox(
   if (pending.length === 0) return null;
 
   return pending.sort((a, b) => {
-    const aRem = remainingSyncMessages(a);
-    const bRem = remainingSyncMessages(b);
-    if (aRem !== bRem) return aRem - bRem;
-    const aToken = a.sync_page_token ? 0 : 1;
-    const bToken = b.sync_page_token ? 0 : 1;
-    if (aToken !== bToken) return aToken - bToken;
+    const aPage = a.sync_page_token ? 0 : 1;
+    const bPage = b.sync_page_token ? 0 : 1;
+    if (aPage !== bPage) return aPage - bPage;
     const ta = new Date(a.updated_at ?? 0).getTime();
     const tb = new Date(b.updated_at ?? 0).getTime();
     return ta - tb;

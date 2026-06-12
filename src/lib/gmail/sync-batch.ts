@@ -13,6 +13,7 @@ import {
 import { scopeEmailsFilter, type MailScope } from "@/lib/mail/scope";
 import {
   finalizeFullSyncComplete,
+  syncCompleteTolerance,
   updateConnectionSyncProgress,
 } from "@/lib/mail/sync-progress";
 import type { MailConnection } from "@/types/mail";
@@ -198,11 +199,17 @@ export async function fullGmailSyncBatch(
   }
 
   const totalInDb = await countSyncedForConnection(connection.id);
+  const tolerance = syncCompleteTolerance(messagesTotal);
   const listHasMore = Boolean(pageToken);
   const countComplete =
-    messagesTotal > 0 && totalInDb >= messagesTotal - 5;
+    messagesTotal > 0 && totalInDb >= messagesTotal - tolerance;
   const countIncomplete =
-    messagesTotal > 0 && totalInDb < messagesTotal - 5;
+    messagesTotal > 0 && totalInDb < messagesTotal - tolerance;
+  const frontierExhausted =
+    listQuery.includes("before:") &&
+    toFetch.length === 0 &&
+    scanned > 0 &&
+    !listHasMore;
   const hasMore = countComplete
     ? false
     : listHasMore || countIncomplete;
@@ -215,6 +222,22 @@ export async function fullGmailSyncBatch(
     await finalizeFullSyncComplete(connection.id, messagesTotal);
     nextListQuery = null;
     nextPageToken = null;
+  } else if (frontierExhausted) {
+    const gap = messagesTotal - totalInDb;
+    if (gap <= tolerance) {
+      console.log(
+        `[sync:${connection.mailbox_email}] frontier exhausted gap=${gap} — marking complete`
+      );
+      await finalizeFullSyncComplete(connection.id, messagesTotal);
+      nextListQuery = null;
+      nextPageToken = null;
+    } else {
+      console.log(
+        `[sync:${connection.mailbox_email}] frontier exhausted gap=${gap} — gap-fill from newest`
+      );
+      nextListQuery = DEFAULT_GMAIL_LIST_QUERY;
+      nextPageToken = null;
+    }
   } else if (effectivelyComplete) {
     nextListQuery = null;
     nextPageToken = null;
@@ -232,7 +255,11 @@ export async function fullGmailSyncBatch(
     }
   }
 
-  if (!countComplete) {
+  const finalizedThisBatch =
+    countComplete ||
+    (frontierExhausted && messagesTotal - totalInDb <= tolerance);
+
+  if (!finalizedThisBatch) {
     await updateConnectionSyncProgress(connection.id, {
       sync_page_token: nextPageToken,
       sync_list_query: nextListQuery,

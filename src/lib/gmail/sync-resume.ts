@@ -1,5 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { MailScope } from "@/lib/mail/scope";
+import { syncCompleteTolerance } from "@/lib/mail/sync-progress";
 import type { MailConnection } from "@/types/mail";
 
 export const DEFAULT_GMAIL_LIST_QUERY = "in:anywhere";
@@ -68,7 +69,16 @@ export async function resolveGmailListResume(
   const incomplete =
     options.messagesTotal > 0 &&
     options.syncedInDb > 0 &&
-    options.syncedInDb < options.messagesTotal - 5;
+    options.syncedInDb <
+      options.messagesTotal - syncCompleteTolerance(options.messagesTotal);
+
+  if (incomplete && savedQuery === DEFAULT_GMAIL_LIST_QUERY) {
+    return {
+      listQuery: DEFAULT_GMAIL_LIST_QUERY,
+      pageToken: undefined,
+      resumedFrom: "start",
+    };
+  }
 
   if (incomplete) {
     const oldest = await getOldestSyncedReceivedAt(scope, connection.id);
